@@ -18,6 +18,7 @@ import {
 } from "./lib/locationStorage";
 import { loadDiscoveryState, loadPreferences, saveDiscoveryState, savePreferences } from "./lib/discoveryStorage";
 import { recordBrowserGpsRequest } from "./lib/requestMetrics";
+import { cuisineOptions, filterAndSortRestaurants } from "./lib/restaurantFilters";
 
 const DEFAULT_CENTER = { lat: 26.2866, lng: 73.0300 }; // Jodhpur fallback, not the user's exact location.
 const GPS_COOLDOWN_MS = 3 * 60 * 60 * 1000;
@@ -51,6 +52,8 @@ export default function App() {
   const [cuisineFilter, setCuisineFilter] = useState(() => preferences.cuisineFilter || "all");
   const [ratingFilter, setRatingFilter] = useState(() => preferences.ratingFilter || "all");
   const [priceFilter, setPriceFilter] = useState(() => preferences.priceFilter || "all");
+  const [openStatus, setOpenStatus] = useState(() => preferences.openStatus || "all");
+  const [sortBy, setSortBy] = useState(() => preferences.sortBy || "distance");
   const [areaSearchActive, setAreaSearchActive] = useState(false);
   const [selectedId, setSelectedId] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -73,8 +76,8 @@ export default function App() {
   } : null);
 
   useEffect(() => {
-    savePreferences({ radius, query, areaQuery, type, cuisineFilter, ratingFilter, priceFilter });
-  }, [radius, query, areaQuery, type, cuisineFilter, ratingFilter, priceFilter]);
+    savePreferences({ radius, query, areaQuery, type, cuisineFilter, ratingFilter, priceFilter, openStatus, sortBy });
+  }, [radius, query, areaQuery, type, cuisineFilter, ratingFilter, priceFilter, openStatus, sortBy]);
 
   useEffect(() => {
     if (!restaurants.length || !location) return;
@@ -233,30 +236,39 @@ export default function App() {
   };
 
   const visibleRestaurants = useMemo(() => {
-    if (!location) return [];
-    return restaurants
-      .map((restaurant) => ({
-        ...restaurant,
-        distance: distanceKm(location, { lat: restaurant.lat, lng: restaurant.lng })
-      }))
-      .filter((restaurant) => restaurant.distance <= radius)
-      .filter((restaurant) => {
-        const text = `${restaurant.name} ${restaurant.address} ${(restaurant.cuisine || []).join(" ")}`.toLowerCase();
-        return text.includes(query.toLowerCase().trim());
-      })
-      .filter((restaurant) => cuisineFilter === "all" || restaurant.cuisine.includes(cuisineFilter))
-      .filter((restaurant) => ratingFilter === "all" || (restaurant.rating != null && restaurant.rating >= Number(ratingFilter)))
-      .filter((restaurant) => priceFilter === "all" || String(restaurant.price_level) === priceFilter)
-      .sort((a, b) => a.distance - b.distance);
-  }, [restaurants, location, radius, query, cuisineFilter, ratingFilter, priceFilter]);
+    return filterAndSortRestaurants(restaurants, {
+      location,
+      radius,
+      query,
+      cuisine: cuisineFilter,
+      minRating: ratingFilter,
+      priceLevel: priceFilter,
+      openStatus,
+      sortBy
+    });
+  }, [restaurants, location, radius, query, cuisineFilter, ratingFilter, priceFilter, openStatus, sortBy]);
 
-  const cuisineOptions = useMemo(() => (
-    [...new Set(restaurants.flatMap((restaurant) => restaurant.cuisine || []))]
-      .filter(Boolean)
-      .slice(0, 5)
-  ), [restaurants]);
+  const availableCuisines = useMemo(() => cuisineOptions(restaurants), [restaurants]);
+  const filtersActive = Boolean(
+    query.trim() || cuisineFilter !== "all" || ratingFilter !== "all" ||
+    priceFilter !== "all" || openStatus !== "all" || sortBy !== "distance" || radius !== 3
+  );
+  const resetFilters = () => {
+    setQuery("");
+    setCuisineFilter("all");
+    setRatingFilter("all");
+    setPriceFilter("all");
+    setOpenStatus("all");
+    setSortBy("distance");
+    setRadius(3);
+  };
 
   const selected = visibleRestaurants.find((r) => r.id === selectedId);
+  const mapRestaurants = useMemo(() => (
+    visibleRestaurants.filter((restaurant) => (
+      Number.isFinite(Number(restaurant.lat)) && Number.isFinite(Number(restaurant.lng))
+    ))
+  ), [visibleRestaurants]);
   const { records: detailRecords, retry: retryDetails } = useRestaurantDetails(selected, selectedId);
   visibleRef.current = visibleRestaurants;
   const savedLocationIsOld = locationMeta && Date.now() - locationMeta.lastUpdatedAt > 86400000;
@@ -327,7 +339,7 @@ export default function App() {
           </div>
           <div className="filter-chips" aria-label="Restaurant filters">
             <button type="button" className={cuisineFilter === "all" ? "active" : ""} onClick={() => setCuisineFilter("all")}>All</button>
-            {cuisineOptions.map((cuisine) => (
+            {availableCuisines.map((cuisine) => (
               <button type="button" className={cuisineFilter === cuisine ? "active" : ""} onClick={() => setCuisineFilter(cuisine)} key={cuisine}>
                 {cuisine}
               </button>
@@ -343,6 +355,11 @@ export default function App() {
               <option value="2">₹₹</option>
               <option value="3">₹₹₹</option>
               <option value="4">₹₹₹₹</option>
+            </select>
+            <select className="filter-chip-select" value={openStatus} onChange={(e) => setOpenStatus(e.target.value)} aria-label="Open status">
+              <option value="all">Any status</option>
+              <option value="open">Open now</option>
+              <option value="closed">Closed</option>
             </select>
           </div>
           <div className="filter-row">
@@ -370,8 +387,15 @@ export default function App() {
           )}
 
           <div className="list-heading">
-            <div><h2>Restaurants around you</h2><p>Sorted by distance</p></div>
-            <span className="sort-label">NEAREST FIRST</span>
+            <div><h2>Restaurants around you</h2><p>Sorted by {sortBy === "rating" ? "rating" : sortBy === "reviews" ? "review count" : "distance"}</p></div>
+            <div className="list-actions">
+              <select className="sort-select" value={sortBy} onChange={(e) => setSortBy(e.target.value)} aria-label="Sort restaurants">
+                <option value="distance">Nearest</option>
+                <option value="rating">Top rated</option>
+                <option value="reviews">Most reviewed</option>
+              </select>
+              {filtersActive && <button type="button" className="reset-filters" onClick={resetFilters}>Reset</button>}
+            </div>
           </div>
 
           <div className="restaurant-list">
@@ -409,7 +433,7 @@ export default function App() {
           <div className="map-frame">
             <MapView
               userLocation={location}
-              restaurants={visibleRestaurants}
+              restaurants={mapRestaurants}
               selectedId={selectedId}
               onSelect={setSelectedId}
               radiusKm={radius}
