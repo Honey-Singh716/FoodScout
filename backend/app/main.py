@@ -35,9 +35,13 @@ TYPE_QUERIES = {
 }
 INITIAL_SEARCH_COVERAGE_RADIUS_KM = float(os.getenv("INITIAL_SEARCH_COVERAGE_RADIUS_KM", "10"))
 DEBUG_COUNTER_ENABLED = os.getenv("FOODSCOUT_DEBUG_COUNTER", "").lower() == "true"
+try:
+    DISCOVERY_CACHE_TTL_MINUTES = float(os.getenv("RESTAURANT_DISCOVERY_CACHE_TTL_MINUTES", "30"))
+except ValueError:
+    DISCOVERY_CACHE_TTL_MINUTES = 30
 restaurant_cache = RestaurantCache(
-    refresh_after=timedelta(minutes=30),
-    max_age=timedelta(minutes=30),
+    refresh_after=timedelta(minutes=DISCOVERY_CACHE_TTL_MINUTES),
+    max_age=timedelta(minutes=DISCOVERY_CACHE_TTL_MINUTES),
 )
 # Kept as a compatibility alias for callers that used the old module-level helper.
 normalize_result = normalize_discovery_result
@@ -187,7 +191,9 @@ async def nearby_restaurants(
     cuisine: str = Query("", max_length=80),
     city: str | None = Query(None, max_length=120),
 ):
-    if place_type not in TYPE_QUERIES:
+    place_type_value = place_type if isinstance(place_type, str) else "restaurant"
+    radius_value = radius_km if isinstance(radius_km, (int, float)) else 3
+    if place_type_value not in TYPE_QUERIES:
         raise HTTPException(status_code=400, detail="Unsupported place type.")
     cuisine_value = cuisine if isinstance(cuisine, str) else ""
     city_value = city if isinstance(city, str) else None
@@ -195,8 +201,8 @@ async def nearby_restaurants(
     entry, served_stale = await _get_nearby_cached(
         lat=lat,
         lng=lng,
-        display_radius_km=radius_km,
-        place_type=place_type,
+        display_radius_km=radius_value,
+        place_type=place_type_value,
         cuisine=cuisine_value,
         city=city_value,
     )
@@ -213,9 +219,11 @@ async def search_restaurants(
     place_type: str = Query("restaurant", alias="type"),
     cuisine: str = Query("", max_length=80),
 ):
-    if place_type not in TYPE_QUERIES:
+    place_type_value = place_type if isinstance(place_type, str) else "restaurant"
+    if place_type_value not in TYPE_QUERIES:
         raise HTTPException(status_code=400, detail="Unsupported place type.")
-    entry, served_stale = await _get_area_cached(query=q, place_type=place_type, cuisine=cuisine)
+    cuisine_value = cuisine if isinstance(cuisine, str) else ""
+    entry, served_stale = await _get_area_cached(query=q, place_type=place_type_value, cuisine=cuisine_value)
     return {
         "results": entry.results,
         "provider": "serpapi",

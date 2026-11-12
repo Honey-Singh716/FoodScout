@@ -185,8 +185,8 @@ class RestaurantCache:
             center_lat=center_lat,
             center_lng=center_lng,
             coverage_radius_km=coverage_radius_km,
-            query=query,
-            category=category,
+            query=_normalize_text(query),
+            category=_normalize_text(category),
             last_fetched_at=fetched,
             expires_at=fetched + self.max_age,
             refresh_at=fetched + self.refresh_after,
@@ -262,6 +262,8 @@ class RestaurantCache:
 
     def clear(self) -> None:
         self._entries.clear()
+        for key in self._metrics:
+            self._metrics[key] = 0
 
     def size(self) -> int:
         self._purge_expired(self._clock())

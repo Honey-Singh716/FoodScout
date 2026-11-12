@@ -1,3 +1,4 @@
+import os
 import re
 from datetime import timedelta
 from typing import Any
@@ -21,7 +22,11 @@ _NOT_FOUND_MARKERS = (
 )
 
 
-details_cache = RestaurantDetailsCache(ttl=timedelta(minutes=15))
+try:
+    DETAILS_CACHE_TTL_MINUTES = float(os.getenv("RESTAURANT_DETAILS_CACHE_TTL_MINUTES", "15"))
+except ValueError:
+    DETAILS_CACHE_TTL_MINUTES = 15
+details_cache = RestaurantDetailsCache(ttl=timedelta(minutes=DETAILS_CACHE_TTL_MINUTES))
 def reset_place_detail_state() -> None:
     details_cache.invalidate()
 
