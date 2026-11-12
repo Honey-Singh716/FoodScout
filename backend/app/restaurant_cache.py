@@ -32,6 +32,9 @@ class CacheKey:
     coverage_radius_km: float
     query: str
     category: str
+    city_id: str = ""
+    cell: str = ""
+    cuisine: str = ""
 
     @classmethod
     def create(
@@ -41,6 +44,9 @@ class CacheKey:
         coverage_radius_km: float,
         query: str,
         category: str,
+        city_id: str = "",
+        cell: str = "",
+        cuisine: str = "",
     ) -> "CacheKey":
         return cls(
             round(center_lat, 5),
@@ -48,6 +54,9 @@ class CacheKey:
             round(coverage_radius_km, 2),
             _normalize_text(query),
             _normalize_text(category),
+            _normalize_text(city_id),
+            _normalize_text(cell),
+            _normalize_text(cuisine),
         )
 
 
@@ -84,6 +93,8 @@ class CacheEntry:
             "coverage_radius_km": self.coverage_radius_km,
             "query": self.query,
             "category": self.category,
+            "city_id": self.key.city_id,
+            "cell": self.key.cell,
             "last_fetched_at": self.last_fetched_at.isoformat(),
             "expires_at": self.expires_at.isoformat(),
         }
@@ -107,6 +118,13 @@ class RestaurantCache:
         self._inflight: dict[CacheKey, asyncio.Future[CacheEntry]] = {}
         self._lock: asyncio.Lock | None = None
         self._lock_loop: asyncio.AbstractEventLoop | None = None
+        self._metrics = {
+            "total_requests": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "failed_upstream_requests": 0,
+            "deduplicated_requests": 0,
+        }
 
     def _get_lock(self) -> asyncio.Lock:
         loop = asyncio.get_running_loop()
@@ -117,6 +135,17 @@ class RestaurantCache:
 
     def now(self) -> datetime:
         return self._clock()
+
+    def record_request(self, hit: bool) -> None:
+        self._metrics["total_requests"] += 1
+        self._metrics["cache_hits" if hit else "cache_misses"] += 1
+
+    def metrics(self) -> dict[str, Any]:
+        total = self._metrics["total_requests"]
+        return {
+            **self._metrics,
+            "cache_hit_percentage": round(self._metrics["cache_hits"] * 100 / total, 2) if total else 0,
+        }
 
     def _purge_expired(self, now: datetime) -> None:
         expired = [key for key, entry in self._entries.items() if entry.is_expired(now)]
@@ -145,6 +174,8 @@ class RestaurantCache:
         coverage_radius_km: float,
         query: str,
         category: str,
+        city_id: str | None = None,
+        cell: str | None = None,
         fetched_at: datetime | None = None,
     ) -> CacheEntry:
         fetched = fetched_at or self._clock()
@@ -175,6 +206,8 @@ class RestaurantCache:
         display_radius_km: float,
         query: str,
         category: str,
+        city_id: str | None = None,
+        cell: str | None = None,
     ) -> CacheEntry | None:
         now = self._clock()
         self._purge_expired(now)
@@ -184,6 +217,8 @@ class RestaurantCache:
             entry for entry in self._entries.values()
             if entry.query == normalized_query
             and entry.category == normalized_category
+            and (city_id is None or entry.key.city_id == _normalize_text(city_id))
+            and (cell is None or entry.key.cell == _normalize_text(cell))
             and _distance_km((lat, lng), (entry.center_lat, entry.center_lng)) + display_radius_km
             <= entry.coverage_radius_km
         ]
@@ -193,7 +228,14 @@ class RestaurantCache:
             default=None,
         )
 
-    def find_latest(self, *, query: str, category: str) -> CacheEntry | None:
+    def find_latest(
+        self,
+        *,
+        query: str,
+        category: str,
+        city_id: str | None = None,
+        cell: str | None = None,
+    ) -> CacheEntry | None:
         now = self._clock()
         self._purge_expired(now)
         normalized_query = _normalize_text(query)
@@ -201,6 +243,8 @@ class RestaurantCache:
         candidates = [
             entry for entry in self._entries.values()
             if entry.query == normalized_query and entry.category == normalized_category
+            and (city_id is None or entry.key.city_id == _normalize_text(city_id))
+            and (cell is None or entry.key.cell == _normalize_text(cell))
         ]
         return max(candidates, key=lambda entry: entry.last_fetched_at, default=None)
 
@@ -244,6 +288,7 @@ class RestaurantCache:
                 leader = True
             else:
                 leader = False
+                self._metrics["deduplicated_requests"] += 1
 
         if not leader:
             try:
@@ -267,6 +312,7 @@ class RestaurantCache:
             future.set_result(entry)
             return entry, False
         except Exception as exc:
+            self._metrics["failed_upstream_requests"] += 1
             future.set_exception(exc)
             future.exception()
             if stale_entry is not None and not stale_entry.is_expired(self._clock()):

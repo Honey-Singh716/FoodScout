@@ -1,6 +1,9 @@
+import { recordFrontendRequest } from "./requestMetrics";
+
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
 async function requestResults(path, signal, onCacheMeta) {
+  recordFrontendRequest("discovery");
   const response = await fetch(`${API_BASE}${path}`, {
     method: "GET",
     headers: { Accept: "application/json" },
@@ -25,6 +28,7 @@ export function searchRestaurantsByArea({ query, type = "restaurant", signal, on
 }
 
 export async function getRestaurantDetails(placeId, signal) {
+  recordFrontendRequest("details");
   const response = await fetch(`${API_BASE}/api/v1/restaurants/${encodeURIComponent(placeId)}`, {
     method: "GET",
     headers: { Accept: "application/json" },

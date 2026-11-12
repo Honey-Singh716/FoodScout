@@ -24,6 +24,10 @@ button { cursor: pointer; }
 .brand > span > span { color:var(--green); }
 .brand-mark { width:34px; height:34px; display:grid; place-items:center; background:#e4ecdf; color:var(--green); border-radius:11px; }
 .top-location { display:flex; align-items:center; gap:8px; color:#687267; font-size:13px; background:#fff; border:1px solid var(--line); border-radius:30px; padding:7px 9px 7px 13px; }
+.location-copy { display:flex; flex-direction:column; gap:1px; min-width:0; }
+.location-copy strong { max-width:210px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; font-weight:600; }
+.location-copy small { color:#9aa395; font-size:9px; white-space:nowrap; }
+.location-copy small.location-stale { color:#a66f42; }
 .icon-button { border:0; background:#edf2e9; color:var(--green); width:28px; height:28px; border-radius:50%; display:grid; place-items:center; }
 .topbar-right { display:flex; align-items:center; gap:15px; }
 .phase-pill { font-size:9px; font-weight:700; letter-spacing:1.2px; color:#71806c; background:#eaf0e6; padding:8px 11px; border-radius:20px; }

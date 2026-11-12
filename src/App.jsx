@@ -10,69 +10,160 @@ import RestaurantDetails from "./components/RestaurantDetails";
 import { getNearbyRestaurants, searchRestaurantsByArea } from "./lib/api";
 import { distanceKm } from "./lib/geo";
 import { useRestaurantDetails } from "./hooks/useRestaurantDetails";
+import {
+  formatLocationAge,
+  loadSavedLocation,
+  MAX_LOCATION_ACCURACY_METERS,
+  saveDeviceLocation
+} from "./lib/locationStorage";
+import { loadDiscoveryState, loadPreferences, saveDiscoveryState, savePreferences } from "./lib/discoveryStorage";
+import { recordBrowserGpsRequest } from "./lib/requestMetrics";
 
 const DEFAULT_CENTER = { lat: 26.2866, lng: 73.0300 }; // Jodhpur fallback, not the user's exact location.
+const GPS_COOLDOWN_MS = 3 * 60 * 60 * 1000;
+const MOVEMENT_THRESHOLD_KM = 0.1;
 
 export default function App() {
-  const [location, setLocation] = useState(null);
-  const [locationLabel, setLocationLabel] = useState("Detecting your location");
-  const [restaurants, setRestaurants] = useState([]);
-  const [radius, setRadius] = useState(3);
-  const [query, setQuery] = useState("");
-  const [areaQuery, setAreaQuery] = useState("");
-  const [type, setType] = useState("restaurant");
-  const [cuisineFilter, setCuisineFilter] = useState("all");
-  const [ratingFilter, setRatingFilter] = useState("all");
-  const [priceFilter, setPriceFilter] = useState("all");
+  const [savedLocation] = useState(loadSavedLocation);
+  const [savedDiscovery] = useState(loadDiscoveryState);
+  const [preferences] = useState(loadPreferences);
+  const restoredLocation = savedDiscovery?.location || savedLocation;
+  const restoredDeviceLocation = savedLocation && restoredLocation
+    && distanceKm(savedLocation, restoredLocation) <= MOVEMENT_THRESHOLD_KM
+    ? savedLocation
+    : null;
+  const [location, setLocation] = useState(() => (
+    restoredLocation
+      ? { lat: restoredLocation.lat, lng: restoredLocation.lng }
+      : DEFAULT_CENTER
+  ));
+  const [locationMeta, setLocationMeta] = useState(restoredDeviceLocation);
+  const [locationLabel, setLocationLabel] = useState(() => (
+    savedDiscovery?.areaSearchActive
+      ? "Saved search location"
+      : savedLocation ? "Saved device location" : "Jodhpur demo area"
+  ));
+  const [restaurants, setRestaurants] = useState(() => savedDiscovery?.results || []);
+  const [radius, setRadius] = useState(() => Number(preferences.radius) || 3);
+  const [query, setQuery] = useState(() => preferences.query || "");
+  const [areaQuery, setAreaQuery] = useState(() => preferences.areaQuery || "");
+  const [type, setType] = useState(() => preferences.type || savedDiscovery?.type || "restaurant");
+  const [cuisineFilter, setCuisineFilter] = useState(() => preferences.cuisineFilter || "all");
+  const [ratingFilter, setRatingFilter] = useState(() => preferences.ratingFilter || "all");
+  const [priceFilter, setPriceFilter] = useState(() => preferences.priceFilter || "all");
   const [areaSearchActive, setAreaSearchActive] = useState(false);
   const [selectedId, setSelectedId] = useState(null);
   const [loading, setLoading] = useState(false);
   const [locating, setLocating] = useState(false);
   const [searchingArea, setSearchingArea] = useState(false);
   const [error, setError] = useState("");
-  const [cacheStatus, setCacheStatus] = useState(null);
+  const [cacheStatus, setCacheStatus] = useState(() => savedDiscovery?.cache || null);
   const [view, setView] = useState(() => (
     window.matchMedia("(max-width: 680px)").matches ? "list" : "split"
   ));
+  const [discoveryGeneration, setDiscoveryGeneration] = useState(0);
   const visibleRef = useRef([]);
   const areaSearchControllerRef = useRef(null);
+  const locationRequestRef = useRef(false);
+  const initialDiscoveryRef = useRef(true);
+  const lastDiscoveryContextRef = useRef(savedDiscovery ? {
+    lat: savedDiscovery.location?.lat,
+    lng: savedDiscovery.location?.lng,
+    type: savedDiscovery.type
+  } : null);
+
+  useEffect(() => {
+    savePreferences({ radius, query, areaQuery, type, cuisineFilter, ratingFilter, priceFilter });
+  }, [radius, query, areaQuery, type, cuisineFilter, ratingFilter, priceFilter]);
+
+  useEffect(() => {
+    if (!restaurants.length || !location) return;
+    saveDiscoveryState({ results: restaurants, location, cache: cacheStatus, type, areaSearchActive });
+  }, [restaurants, location, cacheStatus, type, areaSearchActive]);
 
   const requestLocation = useCallback(() => {
+    if (locationRequestRef.current) return;
+    const currentSaved = loadSavedLocation();
+    if (currentSaved && Date.now() - currentSaved.lastUpdatedAt < GPS_COOLDOWN_MS) {
+      setLocation({ lat: currentSaved.lat, lng: currentSaved.lng });
+      setLocationMeta(currentSaved);
+      setAreaSearchActive(false);
+      setLocationLabel("Saved device location");
+      setError("Using your recently saved location. Fresh GPS is available after the 3-hour cooldown.");
+      return;
+    }
+
     if (!navigator.geolocation) {
-      setError("Your browser does not support location detection. Showing the Jodhpur demo area.");
-      setLocation(DEFAULT_CENTER);
-      setLocationLabel("Jodhpur (demo location)");
+      setError("Your browser does not support location refresh. The existing location is being used.");
       return;
     }
 
     setLocating(true);
+    locationRequestRef.current = true;
     setError("");
+    recordBrowserGpsRequest();
     navigator.geolocation.getCurrentPosition(
       (position) => {
-        const coords = { lat: position.coords.latitude, lng: position.coords.longitude };
-        setLocation(coords);
+        const nextLocation = saveDeviceLocation({
+          lat: position.coords.latitude,
+          lng: position.coords.longitude,
+          accuracy: position.coords.accuracy,
+          lastUpdatedAt: Date.now()
+        });
+        if (!nextLocation) {
+          setError(`Location accuracy is too low. The existing location is preserved (required: ${MAX_LOCATION_ACCURACY_METERS}m or better).`);
+          setLocating(false);
+          locationRequestRef.current = false;
+          return;
+        }
+        const previous = currentSaved || locationMeta;
+        const movement = previous
+          ? distanceKm(previous, { lat: nextLocation.lat, lng: nextLocation.lng })
+          : Infinity;
+        setLocation({ lat: nextLocation.lat, lng: nextLocation.lng });
+        setLocationMeta(nextLocation);
         setAreaSearchActive(false);
         setLocationLabel("Your current location");
         setLocating(false);
+        locationRequestRef.current = false;
+        if (movement <= MOVEMENT_THRESHOLD_KM) {
+          setError("Location refreshed. Your existing restaurant results were reused.");
+        } else {
+          setDiscoveryGeneration((generation) => generation + 1);
+        }
       },
       (geoError) => {
-        setLocation(DEFAULT_CENTER);
-        setAreaSearchActive(false);
-        setLocationLabel("Jodhpur (demo location)");
         setLocating(false);
+        locationRequestRef.current = false;
         const message = geoError.code === 1
-          ? "Location permission was denied. Showing the Jodhpur demo area; you can try again or connect a location search later."
-          : "Couldn't detect your location. Showing the Jodhpur demo area.";
+          ? "Location permission was denied. Your existing location is preserved."
+          : geoError.code === 2
+            ? "Your location is unavailable. Your existing location is preserved."
+            : "Location refresh timed out. Your existing location is preserved.";
         setError(message);
       },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
     );
-  }, []);
-
-  useEffect(() => { requestLocation(); }, [requestLocation]);
+  }, [locationMeta]);
 
   useEffect(() => {
     if (!location || areaSearchActive) return;
+    if (initialDiscoveryRef.current) {
+      initialDiscoveryRef.current = false;
+      return;
+    }
+    const previous = lastDiscoveryContextRef.current;
+    const coverageRadius = Number(cacheStatus?.coverage_radius_km);
+    const searchCenter = cacheStatus?.search_center;
+    const covered = searchCenter && Number.isFinite(coverageRadius)
+      && distanceKm(location, searchCenter) + radius <= coverageRadius;
+    const sameLocation = previous
+      && distanceKm(location, { lat: previous.lat, lng: previous.lng }) <= MOVEMENT_THRESHOLD_KM;
+    const sameType = previous?.type === type;
+    if (restaurants.length && sameType && (sameLocation || covered) && cacheStatus?.status !== "expired") {
+      lastDiscoveryContextRef.current = { lat: location.lat, lng: location.lng, type };
+      return;
+    }
     areaSearchControllerRef.current?.abort();
     const controller = new AbortController();
     areaSearchControllerRef.current = controller;
@@ -90,7 +181,10 @@ export default function App() {
           signal: controller.signal,
           onCacheMeta: setCacheStatus
         });
-        if (active) setRestaurants(data);
+        if (active) {
+          setRestaurants(data);
+          lastDiscoveryContextRef.current = { lat: location.lat, lng: location.lng, type };
+        }
       } catch (err) {
         if (active && err.name !== "AbortError") {
           setError("Couldn't load restaurants. Check that your FastAPI backend is running and try again.");
@@ -103,7 +197,7 @@ export default function App() {
 
     load();
     return () => { active = false; controller.abort(); };
-  }, [location, type, areaSearchActive]); // Radius is filtered locally; changing it should not spend another SerpApi search credit.
+  }, [location, type, areaSearchActive, discoveryGeneration]); // Radius is filtered locally; changing it should not spend another SerpApi search credit.
 
   const searchArea = async (event) => {
     event.preventDefault();
@@ -165,6 +259,7 @@ export default function App() {
   const selected = visibleRestaurants.find((r) => r.id === selectedId);
   const { records: detailRecords, retry: retryDetails } = useRestaurantDetails(selected, selectedId);
   visibleRef.current = visibleRestaurants;
+  const savedLocationIsOld = locationMeta && Date.now() - locationMeta.lastUpdatedAt > 86400000;
 
   return (
     <main className="app-shell">
@@ -175,8 +270,15 @@ export default function App() {
         </a>
         <div className="top-location">
           <MapPin size={15} />
-          <span>{locationLabel}</span>
-          <button className="icon-button" onClick={requestLocation} title="Use my current location" disabled={locating}>
+          <span className="location-copy">
+            <strong>{locationLabel}</strong>
+            {locationMeta && !areaSearchActive && (
+              <small className={savedLocationIsOld ? "location-stale" : ""}>
+                {savedLocationIsOld ? "Older saved location" : "Updated"} {formatLocationAge(locationMeta.lastUpdatedAt)}
+              </small>
+            )}
+          </span>
+          <button className="icon-button" onClick={requestLocation} title="Refresh location" aria-label="Refresh location" disabled={locating}>
             {locating ? <LoaderCircle className="spin" size={16} /> : <LocateFixed size={16} />}
           </button>
         </div>
@@ -301,7 +403,7 @@ export default function App() {
           <div className="map-toolbar">
             <div className="map-label"><span className="live-dot"></span> OPENSTREETMAP <span className="map-separator">·</span> {radius} KM RADIUS</div>
             <button className="locate-button" onClick={requestLocation} disabled={locating}>
-              <Locate size={15}/><span>{locating ? "Locating..." : "My location"}</span>
+              <Locate size={15}/><span>{locating ? "Locating..." : "Refresh location"}</span>
             </button>
           </div>
           <div className="map-frame">

@@ -1,4 +1,5 @@
 import re
+from datetime import timedelta
 from typing import Any
 from urllib.parse import quote_plus
 
@@ -20,7 +21,7 @@ _NOT_FOUND_MARKERS = (
 )
 
 
-details_cache = RestaurantDetailsCache()
+details_cache = RestaurantDetailsCache(ttl=timedelta(minutes=15))
 def reset_place_detail_state() -> None:
     details_cache.invalidate()
 

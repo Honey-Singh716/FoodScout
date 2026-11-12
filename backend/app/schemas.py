@@ -42,6 +42,8 @@ class CacheMetadata(BaseModel):
     coverage_radius_km: float = Field(gt=0)
     query: str
     category: str
+    city_id: str = ""
+    cell: str = ""
     last_fetched_at: datetime
     expires_at: datetime
     served_stale: bool = False
