@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { getRestaurantDetails } from "../lib/api";
 import { isFetchablePlaceId, needsDetailsRequest } from "../lib/restaurantDetails";
 
-export function useRestaurantDetails(selected, selectedId) {
+export function useRestaurantDetails(selected, selectedId, token) {
   const [records, setRecords] = useState({});
   const [attempt, setAttempt] = useState(0);
   const recordsRef = useRef({});
@@ -38,7 +38,7 @@ export function useRestaurantDetails(selected, selectedId) {
     recordsRef.current = loadingState;
     setRecords(loadingState);
 
-    getRestaurantDetails(selected.id, controller.signal)
+    getRestaurantDetails(selected.id, controller.signal, token)
       .then((data) => {
         if (!active) return;
         const next = { ...recordsRef.current, [selected.id]: { status: "ready", data, error: "" } };
@@ -70,7 +70,7 @@ export function useRestaurantDetails(selected, selectedId) {
         setRecords(next);
       }
     };
-  }, [selectedId, attempt, selected]);
+  }, [selectedId, attempt, selected, token]);
 
   const retry = () => {
     if (!selectedId) return;

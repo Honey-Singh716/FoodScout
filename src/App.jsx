@@ -24,7 +24,7 @@ const DEFAULT_CENTER = { lat: 26.2866, lng: 73.0300 }; // Jodhpur fallback, not 
 const GPS_COOLDOWN_MS = 3 * 60 * 60 * 1000;
 const MOVEMENT_THRESHOLD_KM = 0.1;
 
-export default function App() {
+export default function App({ user, token, onNavigate, onLogout }) {
   const [savedLocation] = useState(loadSavedLocation);
   const [savedDiscovery] = useState(loadDiscoveryState);
   const [preferences] = useState(loadPreferences);
@@ -54,8 +54,9 @@ export default function App() {
   const [priceFilter, setPriceFilter] = useState(() => preferences.priceFilter || "all");
   const [openStatus, setOpenStatus] = useState(() => preferences.openStatus || "all");
   const [sortBy, setSortBy] = useState(() => preferences.sortBy || "distance");
+  const [moreFiltersOpen, setMoreFiltersOpen] = useState(false);
   const [areaSearchActive, setAreaSearchActive] = useState(false);
-  const [selectedId, setSelectedId] = useState(null);
+  const [selectedId, setSelectedId] = useState(() => window.sessionStorage.getItem("foodscout.pending-selection"));
   const [loading, setLoading] = useState(false);
   const [locating, setLocating] = useState(false);
   const [searchingArea, setSearchingArea] = useState(false);
@@ -181,6 +182,7 @@ export default function App() {
           lng: location.lng,
           radiusKm: radius,
           type,
+          token,
           signal: controller.signal,
           onCacheMeta: setCacheStatus
         });
@@ -214,6 +216,7 @@ export default function App() {
       const results = await searchRestaurantsByArea({
         query: value,
         type,
+        token,
         signal: controller.signal,
         onCacheMeta: setCacheStatus
       });
@@ -269,9 +272,12 @@ export default function App() {
       Number.isFinite(Number(restaurant.lat)) && Number.isFinite(Number(restaurant.lng))
     ))
   ), [visibleRestaurants]);
-  const { records: detailRecords, retry: retryDetails } = useRestaurantDetails(selected, selectedId);
+  const { records: detailRecords, retry: retryDetails } = useRestaurantDetails(selected, selectedId, token);
   visibleRef.current = visibleRestaurants;
   const savedLocationIsOld = locationMeta && Date.now() - locationMeta.lastUpdatedAt > 86400000;
+  useEffect(() => {
+    if (selectedId) window.sessionStorage.removeItem("foodscout.pending-selection");
+  }, [selectedId]);
 
   return (
     <main className="app-shell">
@@ -295,8 +301,11 @@ export default function App() {
           </button>
         </div>
         <div className="topbar-right">
-          <span className="phase-pill">DISCOVER · SERPAPI</span>
-          <div className="avatar">FS</div>
+          <nav className="app-nav">
+            <button type="button" className="active" onClick={() => onNavigate?.("discover")}>Discover</button>
+            <button type="button" onClick={() => onNavigate?.("recommendations")}>Recommendations</button>
+          </nav>
+          <button className="avatar" type="button" onClick={onLogout} title={`Log out ${user?.name || ""}`} aria-label="Log out">FS</button>
         </div>
       </header>
 
@@ -339,29 +348,37 @@ export default function App() {
           </div>
           <div className="filter-chips" aria-label="Restaurant filters">
             <button type="button" className={cuisineFilter === "all" ? "active" : ""} onClick={() => setCuisineFilter("all")}>All</button>
-            {availableCuisines.map((cuisine) => (
+            {availableCuisines.slice(0, 4).map((cuisine) => (
               <button type="button" className={cuisineFilter === cuisine ? "active" : ""} onClick={() => setCuisineFilter(cuisine)} key={cuisine}>
                 {cuisine}
               </button>
             ))}
-            <select className="filter-chip-select" value={ratingFilter} onChange={(e) => setRatingFilter(e.target.value)} aria-label="Minimum rating">
-              <option value="all">Any rating</option>
-              <option value="4">4+ stars</option>
-              <option value="4.5">4.5+ stars</option>
-            </select>
-            <select className="filter-chip-select" value={priceFilter} onChange={(e) => setPriceFilter(e.target.value)} aria-label="Price level">
-              <option value="all">Any price</option>
-              <option value="1">₹</option>
-              <option value="2">₹₹</option>
-              <option value="3">₹₹₹</option>
-              <option value="4">₹₹₹₹</option>
-            </select>
-            <select className="filter-chip-select" value={openStatus} onChange={(e) => setOpenStatus(e.target.value)} aria-label="Open status">
-              <option value="all">Any status</option>
-              <option value="open">Open now</option>
-              <option value="closed">Closed</option>
-            </select>
+            <button type="button" className={`more-filter-button ${moreFiltersOpen ? "active" : ""}`} onClick={() => setMoreFiltersOpen((open) => !open)} aria-expanded={moreFiltersOpen}>
+              <SlidersHorizontal size={13}/> More filters
+            </button>
           </div>
+          {moreFiltersOpen && (
+            <div className="more-filter-panel" aria-label="Additional restaurant filters">
+              <select value={ratingFilter} onChange={(e) => setRatingFilter(e.target.value)} aria-label="Minimum rating">
+                <option value="all">Any rating</option>
+                <option value="3">3+ stars</option>
+                <option value="4">4+ stars</option>
+                <option value="4.5">4.5+ stars</option>
+              </select>
+              <select value={priceFilter} onChange={(e) => setPriceFilter(e.target.value)} aria-label="Price level">
+                <option value="all">Any price</option>
+                <option value="1">₹</option>
+                <option value="2">₹₹</option>
+                <option value="3">₹₹₹</option>
+                <option value="4">₹₹₹₹</option>
+              </select>
+              <select value={openStatus} onChange={(e) => setOpenStatus(e.target.value)} aria-label="Open status">
+                <option value="all">Any status</option>
+                <option value="open">Open now</option>
+                <option value="closed">Closed</option>
+              </select>
+            </div>
+          )}
           <div className="filter-row">
             <div className="result-count">
               <span className="count-dot"></span>

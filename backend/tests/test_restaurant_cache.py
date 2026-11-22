@@ -98,8 +98,8 @@ class RestaurantCacheTests(unittest.IsolatedAsyncioTestCase):
         search = AsyncMock(return_value=payload)
         with patch("app.main.serpapi_search", search):
             first, second = await asyncio.gather(
-                nearby_restaurants(lat=26.2, lng=73.0, radius_km=3, place_type="restaurant"),
-                nearby_restaurants(lat=26.2, lng=73.0, radius_km=3, place_type="restaurant"),
+                nearby_restaurants(lat=26.2, lng=73.0, radius_km=3, place_type="restaurant", public_preview=True),
+                nearby_restaurants(lat=26.2, lng=73.0, radius_km=3, place_type="restaurant", public_preview=True),
             )
 
         self.assertEqual(first["results"], second["results"])
@@ -114,9 +114,9 @@ class RestaurantCacheTests(unittest.IsolatedAsyncioTestCase):
         }]}
         search = AsyncMock(return_value=payload)
         with patch("app.main.serpapi_search", search):
-            await nearby_restaurants(lat=26.2, lng=73.0, radius_km=3, place_type="restaurant")
-            await nearby_restaurants(lat=26.25, lng=73.0, radius_km=3, place_type="restaurant")
-            await nearby_restaurants(lat=26.4, lng=73.0, radius_km=3, place_type="restaurant")
+            await nearby_restaurants(lat=26.2, lng=73.0, radius_km=3, place_type="restaurant", public_preview=True)
+            await nearby_restaurants(lat=26.25, lng=73.0, radius_km=3, place_type="restaurant", public_preview=True)
+            await nearby_restaurants(lat=26.4, lng=73.0, radius_km=3, place_type="restaurant", public_preview=True)
 
         self.assertEqual(search.await_count, 2)
 

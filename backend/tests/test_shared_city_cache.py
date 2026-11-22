@@ -23,9 +23,9 @@ class SharedCityCacheTests(unittest.IsolatedAsyncioTestCase):
             "gps_coordinates": {"latitude": 26.2, "longitude": 73.0},
         }]}
         provider = AsyncMock(return_value=payload)
-        with patch("app.main.serpapi_search", provider):
-            first = await search_restaurants(q="Sardarpura, Jodhpur")
-            second = await search_restaurants(q=" sardarpura,   jodhpur ")
+        with patch("app.main.current_user", return_value={"id": "1"}), patch("app.main.serpapi_search", provider):
+            first = await search_restaurants(q="Sardarpura, Jodhpur", authorization="Bearer test-token")
+            second = await search_restaurants(q=" sardarpura,   jodhpur ", authorization="Bearer test-token")
 
         self.assertEqual(first["results"], second["results"])
         provider.assert_awaited_once()
@@ -44,9 +44,9 @@ class SharedCityCacheTests(unittest.IsolatedAsyncioTestCase):
                 "gps_coordinates": {"latitude": 28.6, "longitude": 77.2},
             }]},
         ])
-        with patch("app.main.serpapi_search", provider):
-            jodhpur = await search_restaurants(q="Jodhpur")
-            delhi = await search_restaurants(q="Delhi")
+        with patch("app.main.current_user", return_value={"id": "1"}), patch("app.main.serpapi_search", provider):
+            jodhpur = await search_restaurants(q="Jodhpur", authorization="Bearer test-token")
+            delhi = await search_restaurants(q="Delhi", authorization="Bearer test-token")
 
         self.assertEqual(jodhpur["results"][0]["id"], "jodhpur-place")
         self.assertEqual(delhi["results"][0]["id"], "delhi-place")
@@ -61,10 +61,10 @@ class SharedCityCacheTests(unittest.IsolatedAsyncioTestCase):
                 "gps_coordinates": {"latitude": 26.2, "longitude": 73.0},
             }]}
 
-        with patch("app.main.serpapi_search", AsyncMock(side_effect=provider)) as search:
+        with patch("app.main.current_user", return_value={"id": "1"}), patch("app.main.serpapi_search", AsyncMock(side_effect=provider)) as search:
             await asyncio.gather(
-                search_restaurants(q="Jodhpur"),
-                search_restaurants(q="Jodhpur"),
+                search_restaurants(q="Jodhpur", authorization="Bearer test-token"),
+                search_restaurants(q="Jodhpur", authorization="Bearer test-token"),
             )
 
         search.assert_awaited_once()
@@ -72,11 +72,11 @@ class SharedCityCacheTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_invalid_provider_response_is_not_cached(self):
         provider = AsyncMock(side_effect=HTTPException(status_code=502, detail="invalid"))
-        with patch("app.main.serpapi_search", provider):
+        with patch("app.main.current_user", return_value={"id": "1"}), patch("app.main.serpapi_search", provider):
             with self.assertRaises(HTTPException):
-                await nearby_restaurants(lat=26.2, lng=73.0)
+                await nearby_restaurants(lat=26.2, lng=73.0, public_preview=True)
             with self.assertRaises(HTTPException):
-                await nearby_restaurants(lat=26.2, lng=73.0)
+                await nearby_restaurants(lat=26.2, lng=73.0, public_preview=True)
 
         self.assertEqual(provider.await_count, 2)
         self.assertEqual(restaurant_cache.size(), 0)

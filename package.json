@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "test:auth": "node --test src/lib/authStorage.test.js",
     "test:filters": "node --test src/lib/restaurantFilters.test.js",
+    "test:recommendations": "node --test src/lib/recommendations.test.js",
     "preview": "vite preview"
   },
   "dependencies": {

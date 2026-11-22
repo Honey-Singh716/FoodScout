@@ -1,28 +1,53 @@
 import os
 from datetime import timedelta
 from typing import Any
+from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 
 from app.place_details import get_place_details
+from app.auth import current_user, get_preferences, login, logout, save_preferences, signup
+from app.account import add_favorite, get_profile, list_favorites, record_activity, remove_favorite, save_profile
+from app.database import Base, engine, SessionLocal
+from app import models
+from app.recommendation_service import rank_restaurants
 from app.geography import area_cell, geo_cell, normalize_city
 from app.normalization import normalize_discovery_result, normalize_discovery_results
 from app.restaurant_cache import CacheKey, CacheEntry, RestaurantCache
-from app.schemas import RestaurantDetails, RestaurantResultsResponse
+from app.schemas import (
+    AuthCredentials,
+    AuthResponse,
+    AuthSignup,
+    AuthUser,
+    FavoriteRequest,
+    FavoriteResponse,
+    RestaurantDetails,
+    RestaurantResultsResponse,
+    UserActivityRequest,
+    UserPreferences,
+    UserProfile,
+)
 from app.serpapi import API_KEY, get_serpapi_request_counts, serpapi_search
 
 load_dotenv()
 
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")
 
-app = FastAPI(title="FoodScout API", version="0.1.0")
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    Base.metadata.create_all(bind=engine)
+    yield
+
+
+app = FastAPI(title="FoodScout API", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[FRONTEND_ORIGIN, "http://127.0.0.1:5173"],
     allow_credentials=False,
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
@@ -49,7 +74,123 @@ normalize_result = normalize_discovery_result
 
 @app.get("/api/v1/health")
 async def health():
-    return {"status": "ok", "provider": "serpapi", "key_configured": bool(API_KEY)}
+    database_status = "ok"
+    try:
+        db = SessionLocal()
+        db.execute(text("SELECT 1"))
+        db.close()
+    except Exception:
+        database_status = "unavailable"
+    return {
+        "status": "ok" if database_status == "ok" else "degraded",
+        "provider": "serpapi",
+        "key_configured": bool(API_KEY),
+        "database": database_status,
+    }
+
+
+@app.post("/api/v1/auth/signup", response_model=AuthResponse)
+async def auth_signup(credentials: AuthSignup):
+    return signup(credentials.name, credentials.email, credentials.password)
+
+
+@app.post("/api/v1/auth/login", response_model=AuthResponse)
+async def auth_login(credentials: AuthCredentials):
+    return login(credentials.email, credentials.password)
+
+
+@app.get("/api/v1/auth/me", response_model=AuthUser)
+async def auth_me(authorization: str | None = Header(default=None)):
+    return current_user(_bearer_token(authorization))
+
+
+@app.post("/api/v1/auth/logout")
+async def auth_logout(authorization: str | None = Header(default=None)):
+    return logout(_bearer_token(authorization))
+
+
+def _bearer_token(authorization: str | None) -> str:
+    if not isinstance(authorization, str) or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    return authorization[7:].strip()
+
+
+@app.get("/api/v1/auth/preferences", response_model=UserPreferences)
+async def auth_preferences(authorization: str | None = Header(default=None)):
+    return get_preferences(_bearer_token(authorization))
+
+
+@app.put("/api/v1/auth/preferences", response_model=UserPreferences)
+async def update_auth_preferences(
+    preferences: UserPreferences,
+    authorization: str | None = Header(default=None),
+):
+    return save_preferences(_bearer_token(authorization), preferences.cuisines)
+
+
+@app.get("/api/v1/auth/profile", response_model=UserProfile)
+async def auth_profile(authorization: str | None = Header(default=None)):
+    return get_profile(_bearer_token(authorization))
+
+
+@app.put("/api/v1/auth/profile", response_model=UserProfile)
+async def update_auth_profile(
+    profile: UserProfile,
+    authorization: str | None = Header(default=None),
+):
+    return save_profile(_bearer_token(authorization), profile.display_name, profile.avatar_url)
+
+
+@app.get("/api/v1/auth/favorites", response_model=list[FavoriteResponse])
+async def auth_favorites(authorization: str | None = Header(default=None)):
+    return list_favorites(_bearer_token(authorization))
+
+
+@app.post("/api/v1/auth/favorites", response_model=FavoriteResponse)
+async def create_auth_favorite(
+    favorite: FavoriteRequest,
+    authorization: str | None = Header(default=None),
+):
+    return add_favorite(_bearer_token(authorization), favorite.place_id)
+
+
+@app.delete("/api/v1/auth/favorites/{place_id}", response_model=dict)
+async def delete_auth_favorite(place_id: str, authorization: str | None = Header(default=None)):
+    return remove_favorite(_bearer_token(authorization), place_id)
+
+
+@app.post("/api/v1/auth/activity")
+async def create_auth_activity(
+    activity: UserActivityRequest,
+    authorization: str | None = Header(default=None),
+):
+    return record_activity(
+        _bearer_token(authorization),
+        activity.event_type,
+        activity.place_id,
+        activity.metadata,
+    )
+
+
+@app.post("/api/v1/recommendations/rank")
+async def recommendations_rank(payload: dict[str, Any], authorization: str | None = Header(default=None)):
+    current_user(_bearer_token(authorization))
+    restaurants = payload.get("restaurants")
+    location = payload.get("location")
+    cuisines = payload.get("cuisines")
+    if not isinstance(restaurants, list):
+        raise HTTPException(status_code=400, detail="restaurants must be a list.")
+    if location is not None and not isinstance(location, dict):
+        raise HTTPException(status_code=400, detail="location must be an object.")
+    if cuisines is not None and not isinstance(cuisines, list):
+        raise HTTPException(status_code=400, detail="cuisines must be a list.")
+    return {
+        "results": rank_restaurants(
+            [item for item in restaurants if isinstance(item, dict)],
+            location,
+            [value for value in (cuisines or []) if isinstance(value, str)],
+        )
+    }
 
 
 @app.get("/api/v1/debug/serpapi-requests")
@@ -190,7 +331,14 @@ async def nearby_restaurants(
     place_type: str = Query("restaurant", alias="type"),
     cuisine: str = Query("", max_length=80),
     city: str | None = Query(None, max_length=120),
+    public_preview: bool = False,
+    authorization: str | None = Header(default=None),
 ):
+    if public_preview:
+        if isinstance(authorization, str):
+            current_user(_bearer_token(authorization))
+    else:
+        current_user(_bearer_token(authorization))
     place_type_value = place_type if isinstance(place_type, str) else "restaurant"
     radius_value = radius_km if isinstance(radius_km, (int, float)) else 3
     if place_type_value not in TYPE_QUERIES:
@@ -218,7 +366,9 @@ async def search_restaurants(
     q: str = Query(..., min_length=2, max_length=120),
     place_type: str = Query("restaurant", alias="type"),
     cuisine: str = Query("", max_length=80),
+    authorization: str | None = Header(default=None),
 ):
+    current_user(_bearer_token(authorization))
     place_type_value = place_type if isinstance(place_type, str) else "restaurant"
     if place_type_value not in TYPE_QUERIES:
         raise HTTPException(status_code=400, detail="Unsupported place type.")
@@ -232,5 +382,6 @@ async def search_restaurants(
 
 
 @app.get("/api/v1/restaurants/{place_id}", response_model=RestaurantDetails)
-async def restaurant_details(place_id: str):
+async def restaurant_details(place_id: str, authorization: str | None = Header(default=None)):
+    current_user(_bearer_token(authorization))
     return await get_place_details(place_id)
